@@ -27,6 +27,19 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "ModeEnum.hpp"
 #include "MsgTypeEnum.hpp"
 
+// https://github.com/pschatzmann/arduino-audio-tools/
+#include "AudioTools.h"
+
+/// AudioTools Things
+AudioInfo info(44100, 1, 16);
+SineWaveGenerator<int16_t> sineWave(3000);
+GeneratedSoundStream<int16_t> fakeSoundStream(sineWave);
+AnalogAudioStream analogAudioStream;
+StreamCopy copier(analogAudioStream, fakeSoundStream);
+
+
+/// Application Things
+
 const byte FIRMWARE_VER[8] = {'0', '0', '0', '0', '0', '0', '0', '1'}; // Should be 8 characters representing a zero-padded version, like 00000001.
 const byte VERSION_PREFIX[7] = {'V', 'E', 'R', 'S', 'I', 'O', 'N'};    // Must match RadioAudioService.VERSION_PREFIX in Android app.
 
@@ -64,17 +77,6 @@ boolean isTxCacheSatisfied = false; // Will be true when the DAC has enough cach
 
 // Built in LED
 #define LED_PIN 2
-
-// i2s pins
-i2s_pin_config_t i2sPins = {
-    .bck_io_num = GPIO_NUM_27,
-    .ws_io_num = GPIO_NUM_14,
-    .data_out_num = GPIO_NUM_26,
-    .data_in_num = -1};
-
-I2SOutput *output;
-SampleSource *sampleSource;
-SerialSampleSource<TX_TEMP_AUDIO_BUFFER_SIZE> *serialSampleSource;
 
 // Object used for radio module serial comms
 DRA818 *dra = new DRA818(&Serial2, DRA818_VHF);
@@ -162,6 +164,13 @@ void setup()
   setupLED();
   setupDRA818();
   setInitialState();
+
+  auto config = analogAudioStream.defaultConfig(TX_MODE);
+  config.copyFrom(info);
+  // config.bits_per_sample = 8;
+  analogAudioStream.begin(config);
+  sineWave.begin(info, N_B4);
+  // sineWave.end();
 }
 
 void initI2SRx()
@@ -228,12 +237,14 @@ void handleData()
     };
     Serial.readBytes(sizeBuffer, 2);
     uint16_t numberOfIncomingAudioBytes = (sizeBuffer[0] << 8) | (sizeBuffer[1] & 0xFF);
-    Serial.println(numberOfIncomingAudioBytes);
-    while (Serial.available() < numberOfIncomingAudioBytes)
-    {
-      // Wait for the amount of data we want
-    };
-    serialSampleSource->readFromSerial(numberOfIncomingAudioBytes);
+    // Serial.println(numberOfIncomingAudioBytes);
+    // while (Serial.available() < numberOfIncomingAudioBytes)
+    // {
+    //   // Wait for the amount of data we want
+    // };
+    // serialSampleSource->readFromSerial(numberOfIncomingAudioBytes);
+    for (int i = 0; i < numberOfIncomingAudioBytes; ++i)
+      copier.copy();
   }
   else
   {
@@ -250,14 +261,14 @@ void handleCMD()
   {
   case CommandValue::COMMAND_PTT_DOWN:
   {
-    output->start(I2S_NUM_0, i2sPins, sampleSource);
+    // output->start(I2S_NUM_0, i2sPins, sampleSource);
     setMode(Mode::MODE_TX);
     esp_task_wdt_reset();
   }
   break;
   case CommandValue::COMMAND_PTT_UP:
   {
-    output->stop(I2S_NUM_0);
+    // output->stop(I2S_NUM_0);
     setMode(Mode::MODE_RX);
     esp_task_wdt_reset();
   }

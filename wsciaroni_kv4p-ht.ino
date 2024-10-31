@@ -35,8 +35,17 @@ AudioInfo info(44100, 1, 16);
 SineWaveGenerator<int16_t> sineWave(3000);
 GeneratedSoundStream<int16_t> fakeSoundStream(sineWave);
 AnalogAudioStream analogAudioStream;
-StreamCopy copier(analogAudioStream, fakeSoundStream);
+// StreamCopy copier(analogAudioStream, fakeSoundStream);
 
+// txQueue
+BufferRTOS<uint8_t> txBuffer(1024 * 10);
+QueueStream<uint8_t> txQueue(txBuffer);
+// StreamCopy
+StreamCopy txCopierSourceToBuffer(txQueue, fakeSoundStream);
+StreamCopy txCopierBufferToSink(analogAudioStream, txQueue);
+// Tasks
+Task txWriteToSinkTask("write", 3000, 10, 0);
+Task txReadFromSourceTask("read", 3000, 10, 1);
 
 /// Application Things
 
@@ -157,6 +166,25 @@ void setInitialState()
   setMode(Mode::MODE_STOPPED);
 }
 
+void setupAudioTools()
+{
+  auto config = analogAudioStream.defaultConfig(TX_MODE);
+  config.copyFrom(info);
+  // config.bits_per_sample = 8;
+  analogAudioStream.begin(config);
+  sineWave.begin(info, N_B4);
+  // sineWave.end();
+
+  txQueue.begin();
+  txWriteToSinkTask.begin([]()
+                          { txCopierBufferToSink.copy(); });
+
+  txReadFromSourceTask.begin([]()
+                             { txCopierSourceToBuffer.copy(); });
+
+  stopTx();
+}
+
 void setup()
 {
   setupSerial();
@@ -164,13 +192,7 @@ void setup()
   setupLED();
   setupDRA818();
   setInitialState();
-
-  auto config = analogAudioStream.defaultConfig(TX_MODE);
-  config.copyFrom(info);
-  // config.bits_per_sample = 8;
-  analogAudioStream.begin(config);
-  sineWave.begin(info, N_B4);
-  // sineWave.end();
+  setupAudioTools();
 }
 
 void handleData()
@@ -191,7 +213,7 @@ void handleData()
     // };
     // serialSampleSource->readFromSerial(numberOfIncomingAudioBytes);
     // for (int i = 0; i < numberOfIncomingAudioBytes; ++i)
-      // copier.copy();
+    // copier.copy();
   }
   else
   {
@@ -427,8 +449,8 @@ void loop()
       Serial.flush();
     }
 
-    if(Mode::MODE_TX == mode)
-      copier.copy();
+    // if(Mode::MODE_TX == mode)
+    //   copier.copy();
     // Regularly reset the WDT timer to prevent the device from rebooting (prove we're not locked up).
     esp_task_wdt_reset();
   }
@@ -447,13 +469,19 @@ void tuneTo(float freqTx, float freqRx, int tone, int squelch)
 
 void stopTx()
 {
-  // copier.end();
+  txReadFromSourceTask.suspend();
+  while (txQueue.available())
+  {
+    // Wait for Tx to finish clearing the buffer
+  }
+  txWriteToSinkTask.suspend();
 }
 
 void startTx()
 {
-  // analogAudioStream.flush();
-  // copier.begin();
+  txQueue.flush();
+  txWriteToSinkTask.resume();
+  txReadFromSourceTask.resume();
 }
 
 void setMode(Mode newMode)
@@ -462,11 +490,11 @@ void setMode(Mode newMode)
   {
     return;
   }
-  if(Mode::MODE_TX == mode)
+  if (Mode::MODE_TX == mode)
   {
     stopTx();
   }
-  if(Mode::MODE_TX == newMode)
+  if (Mode::MODE_TX == newMode)
   {
     startTx();
   }

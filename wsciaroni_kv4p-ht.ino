@@ -173,59 +173,6 @@ void setup()
   // sineWave.end();
 }
 
-void initI2SRx()
-{
-  // Remove any previous driver (rx or tx) that may have been installed.
-  if (i2sStarted)
-  {
-    i2s_driver_uninstall(I2S_NUM_0);
-  }
-  i2sStarted = true;
-
-  // Initialize ADC
-  adc1_config_width(ADC_WIDTH_BIT_12);
-  adc1_config_channel_atten(ADC1_CHANNEL_6, ADC_ATTEN_DB_0);
-
-  static const i2s_config_t i2sRxConfig = {
-      .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_ADC_BUILT_IN),
-      .sample_rate = AUDIO_SAMPLE_RATE + SAMPLING_RATE_OFFSET,
-      .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
-      .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
-      .communication_format = i2s_comm_format_t(I2S_COMM_FORMAT_I2S | I2S_COMM_FORMAT_I2S_MSB),
-      .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-      .dma_buf_count = 4,
-      .dma_buf_len = I2S_READ_LEN,
-      .use_apll = true,
-      .tx_desc_auto_clear = false,
-      .fixed_mclk = 0};
-
-  ESP_ERROR_CHECK(i2s_driver_install(I2S_NUM_0, &i2sRxConfig, 0, NULL));
-  ESP_ERROR_CHECK(i2s_set_adc_mode(I2S_ADC_UNIT, I2S_ADC_CHANNEL));
-}
-
-void initI2STx()
-{
-  // Remove any previous driver (rx or tx) that may have been installed.
-  if (i2sStarted)
-  {
-    i2s_driver_uninstall(I2S_NUM_0);
-  }
-  i2sStarted = true;
-
-  static const i2s_config_t i2sTxConfig = {
-      .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX | I2S_MODE_DAC_BUILT_IN),
-      .sample_rate = AUDIO_SAMPLE_RATE,
-      .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
-      .channel_format = I2S_CHANNEL_FMT_ONLY_RIGHT,
-      .intr_alloc_flags = 0,
-      .dma_buf_count = 8,
-      .dma_buf_len = I2S_WRITE_LEN,
-      .use_apll = true};
-
-  i2s_driver_install(I2S_NUM_0, &i2sTxConfig, 0, NULL);
-  i2s_set_dac_mode(I2S_DAC_CHANNEL_RIGHT_EN);
-}
-
 void handleData()
 {
   if (Mode::MODE_TX == mode)

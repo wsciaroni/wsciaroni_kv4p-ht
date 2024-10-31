@@ -244,7 +244,7 @@ void handleData()
     // };
     // serialSampleSource->readFromSerial(numberOfIncomingAudioBytes);
     // for (int i = 0; i < numberOfIncomingAudioBytes; ++i)
-      copier.copy();
+      // copier.copy();
   }
   else
   {
@@ -480,6 +480,8 @@ void loop()
       Serial.flush();
     }
 
+    if(Mode::MODE_TX == mode)
+      copier.copy();
     // Regularly reset the WDT timer to prevent the device from rebooting (prove we're not locked up).
     esp_task_wdt_reset();
   }
@@ -503,6 +505,7 @@ void stopTx()
 
 void startTx()
 {
+  // analogAudioStream.flush();
   // copier.begin();
 }
 

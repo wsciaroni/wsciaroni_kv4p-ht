@@ -99,21 +99,30 @@ int fadeDirection = 0;             // 0: no fade, 1: fade in, -1: fade out
 int attenuation = ATTENUATION_MAX; // Full volume
 bool lastSquelched = false;
 
-void setup()
+void setupSerial()
 {
   // Communication with Android via USB cable
   Serial.begin(921600);
   Serial.setRxBufferSize(USB_BUFFER_SIZE);
   Serial.setTxBufferSize(USB_BUFFER_SIZE);
+}
 
+void setupWDT()
+{
   // Configure watch dog timer (WDT), which will reset the system if it gets stuck somehow.
   esp_task_wdt_init(10, true); // Reboot if locked up for a bit
   esp_task_wdt_add(NULL);      // Add the current task to WDT watch
+}
 
+void setupLED()
+{
   // Debug LED
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
+}
 
+void setupDRA818()
+{
   /////////////////////////////// Setup Radio Module
   // Set up radio module defaults
   pinMode(PD_PIN, OUTPUT);
@@ -130,21 +139,28 @@ void setup()
   {
     result = dra->handshake(); // Wait for module to start up
   }
+
   // Serial.println("handshake: " + String(result));
   // tuneTo(146.700, 146.700, 0, 0);
   result = dra->volume(8);
   // Serial.println("volume: " + String(result));
   result = dra->filters(false, false, false);
   // Serial.println("filters: " + String(result));
+}
 
-  /////////////////////////////// Setup Tx Module
-  serialSampleSource = new SerialSampleSource<TX_TEMP_AUDIO_BUFFER_SIZE>(AUDIO_SAMPLE_RATE);
-  sampleSource = static_cast<SampleSource *>(serialSampleSource);
-  output = new I2SOutput();
-
-  /////////////////////////////// Set initial state
+void setInitialState()
+{
   // Begin in STOPPED mode
   setMode(Mode::MODE_STOPPED);
+}
+
+void setup()
+{
+  setupSerial();
+  setupWDT();
+  setupLED();
+  setupDRA818();
+  setInitialState();
 }
 
 void initI2SRx()
@@ -207,6 +223,200 @@ enum class MsgType : uint8_t
   DEFAULT_CMD = 0
 };
 
+void handleData()
+{
+  if (Mode::MODE_TX == mode)
+  {
+    uint8_t sizeBuffer[2];
+    while (Serial.available() < 2)
+    {
+      // Wait for the amount of data we want
+    };
+    Serial.readBytes(sizeBuffer, 2);
+    uint16_t numberOfIncomingAudioBytes = (sizeBuffer[0] << 8) | (sizeBuffer[1] & 0xFF);
+    Serial.println(numberOfIncomingAudioBytes);
+    while (Serial.available() < numberOfIncomingAudioBytes)
+    {
+      // Wait for the amount of data we want
+    };
+    serialSampleSource->readFromSerial(numberOfIncomingAudioBytes);
+  }
+  else
+  {
+    throw 1;
+  }
+}
+
+void handleCMD()
+{
+  // Serial.println("CMD");
+  uint8_t commandBuffer[1];
+  Serial.readBytes(commandBuffer, 1);
+  switch (static_cast<CommandValue>(commandBuffer[0]))
+  {
+  case CommandValue::COMMAND_PTT_DOWN:
+  {
+    output->start(I2S_NUM_0, i2sPins, sampleSource);
+    setMode(Mode::MODE_TX);
+    esp_task_wdt_reset();
+  }
+  break;
+  case CommandValue::COMMAND_PTT_UP:
+  {
+    output->stop(I2S_NUM_0);
+    setMode(Mode::MODE_RX);
+    esp_task_wdt_reset();
+  }
+  break;
+  case CommandValue::COMMAND_TUNE_TO:
+  {
+    // Example:
+    // 145.450144.850061
+    // 7 chars for tx, 7 chars for rx, 2 chars for tone, 1 char for squelch (17 bytes total for params)
+    setMode(Mode::MODE_RX);
+
+    // If we haven't received all the parameters needed for COMMAND_TUNE_TO, wait for them before continuing.
+    // This can happen if ESP32 has pulled part of the command+params from the buffer before Android has completed
+    // putting them in there. If so, we take byte-by-byte until we get the full params.
+    int paramBytesMissing = 17;
+    String paramsStr = "";
+    if (paramBytesMissing > 0)
+    {
+      uint8_t paramPartsBuffer[paramBytesMissing];
+      for (int j = 0; j < paramBytesMissing; j++)
+      {
+        unsigned long waitStart = micros();
+        while (!Serial.available())
+        {
+          // Wait for a byte.
+          if ((micros() - waitStart) > 500000)
+          { // Give the Android app 0.5 second max before giving up on the command
+            esp_task_wdt_reset();
+            return;
+          }
+        }
+        paramPartsBuffer[j] = Serial.read();
+      }
+      paramsStr += String((char *)paramPartsBuffer);
+      paramBytesMissing--;
+    }
+    float freqTxFloat = paramsStr.substring(0, 7).toFloat();
+    float freqRxFloat = paramsStr.substring(7, 14).toFloat();
+    int toneInt = paramsStr.substring(14, 16).toInt();
+    int squelchInt = paramsStr.substring(16, 17).toInt();
+
+    // Serial.println("PARAMS: " + paramsStr.substring(0, 16) + " freqTxFloat: " + String(freqTxFloat) + " freqRxFloat: " + String(freqRxFloat) + " toneInt: " + String(toneInt));
+
+    tuneTo(freqTxFloat, freqRxFloat, toneInt, squelchInt);
+  }
+  break;
+  case CommandValue::COMMAND_FILTERS:
+  {
+    int paramBytesMissing = 3; // e.g. 000, in order of emphasis, highpass, lowpass
+    String paramsStr = "";
+    if (paramBytesMissing > 0)
+    {
+      uint8_t paramPartsBuffer[paramBytesMissing];
+      for (int j = 0; j < paramBytesMissing; j++)
+      {
+        unsigned long waitStart = micros();
+        while (!Serial.available())
+        {
+          // Wait for a byte.
+          if ((micros() - waitStart) > 500000)
+          { // Give the Android app 0.5 second max before giving up on the command
+            esp_task_wdt_reset();
+            return;
+          }
+        }
+        paramPartsBuffer[j] = Serial.read();
+      }
+      paramsStr += String((char *)paramPartsBuffer);
+      paramBytesMissing--;
+    }
+    bool emphasis = (paramsStr.charAt(0) == '1');
+    bool highpass = (paramsStr.charAt(1) == '1');
+    bool lowpass = (paramsStr.charAt(2) == '1');
+
+    dra->filters(emphasis, highpass, lowpass);
+  }
+  break;
+  case CommandValue::COMMAND_STOP:
+  {
+    Serial.flush();
+  }
+  break;
+  case CommandValue::COMMAND_GET_FIRMWARE_VER:
+  {
+    Serial.write(VERSION_PREFIX, sizeof(VERSION_PREFIX));
+    Serial.write(FIRMWARE_VER, sizeof(FIRMWARE_VER));
+  }
+  break;
+  default:
+    break;
+  }
+}
+
+void handleRxLoopAction()
+{
+  size_t bytesRead = 0;
+  uint8_t buffer32[I2S_READ_LEN * 4] = {0};
+  ESP_ERROR_CHECK(i2s_read(I2S_NUM_0, &buffer32, sizeof(buffer32), &bytesRead, 100));
+  size_t samplesRead = bytesRead / 4;
+
+  byte buffer8[I2S_READ_LEN] = {0};
+  bool squelched = (digitalRead(SQ_PIN) == HIGH);
+
+  // Check for squelch status change
+  if (squelched != lastSquelched)
+  {
+    if (squelched)
+    {
+      // Start fade-out
+      fadeCounter = FADE_SAMPLES;
+      fadeDirection = -1;
+    }
+    else
+    {
+      // Start fade-in
+      fadeCounter = FADE_SAMPLES;
+      fadeDirection = 1;
+    }
+  }
+  lastSquelched = squelched;
+
+  int attenuationIncrement = ATTENUATION_MAX / FADE_SAMPLES;
+
+  for (int i = 0; i < samplesRead; i++)
+  {
+    uint8_t sampleValue;
+
+    // Extract 8-bit sample from 32-bit buffer
+    sampleValue = buffer32[i * 4 + 3] << 4;
+    sampleValue |= buffer32[i * 4 + 2] >> 4;
+
+    // Adjust attenuation during fade
+    if (fadeCounter > 0)
+    {
+      fadeCounter--;
+      attenuation += fadeDirection * attenuationIncrement;
+      attenuation = max(0, min(attenuation, ATTENUATION_MAX));
+    }
+    else
+    {
+      attenuation = squelched ? 0 : ATTENUATION_MAX;
+      fadeDirection = 0;
+    }
+
+    // Apply attenuation to the sample
+    int adjustedSample = (((int)sampleValue - 128) * attenuation) >> 8;
+    adjustedSample += 128;
+    buffer8[i] = (uint8_t)adjustedSample;
+  }
+
+  Serial.write(buffer8, samplesRead);
+}
+
 void loop()
 {
   try
@@ -225,218 +435,38 @@ void loop()
     {
     case MsgType::DATA:
     {
-      if (Mode::MODE_TX == mode)
-      {
-        uint8_t sizeBuffer[2];
-        while (Serial.available() < 2)
-        {
-          // Wait for the amount of data we want
-        };
-        Serial.readBytes(sizeBuffer, 2);
-        uint16_t numberOfIncomingAudioBytes = (sizeBuffer[0] << 8) | (sizeBuffer[1] & 0xFF);
-        Serial.println(numberOfIncomingAudioBytes);
-        while (Serial.available() < numberOfIncomingAudioBytes)
-        {
-          // Wait for the amount of data we want
-        };
-        serialSampleSource->readFromSerial(numberOfIncomingAudioBytes);
-      }
-      else
-      {
-        throw 1;
-      }
+      handleData();
     }
     break;
     case MsgType::CMD:
     {
-        // Serial.println("CMD");
-      uint8_t commandBuffer[1];
-      Serial.readBytes(commandBuffer, 1);
-      switch (static_cast<CommandValue>(commandBuffer[0]))
-      {
-      case CommandValue::COMMAND_PTT_DOWN:
-      {
-        output->start(I2S_NUM_0, i2sPins, sampleSource);
-        setMode(Mode::MODE_TX);
-        esp_task_wdt_reset();
-      }
-      break;
-      case CommandValue::COMMAND_PTT_UP:
-      {
-        output->stop(I2S_NUM_0);
-        setMode(Mode::MODE_RX);
-        esp_task_wdt_reset();
-      }
-      break;
-      case CommandValue::COMMAND_TUNE_TO:
-      {
-        // Example:
-        // 145.450144.850061
-        // 7 chars for tx, 7 chars for rx, 2 chars for tone, 1 char for squelch (17 bytes total for params)
-        setMode(Mode::MODE_RX);
-
-        // If we haven't received all the parameters needed for COMMAND_TUNE_TO, wait for them before continuing.
-        // This can happen if ESP32 has pulled part of the command+params from the buffer before Android has completed
-        // putting them in there. If so, we take byte-by-byte until we get the full params.
-        int paramBytesMissing = 17;
-        String paramsStr = "";
-        if (paramBytesMissing > 0)
-        {
-          uint8_t paramPartsBuffer[paramBytesMissing];
-          for (int j = 0; j < paramBytesMissing; j++)
-          {
-            unsigned long waitStart = micros();
-            while (!Serial.available())
-            {
-              // Wait for a byte.
-              if ((micros() - waitStart) > 500000)
-              { // Give the Android app 0.5 second max before giving up on the command
-                esp_task_wdt_reset();
-                return;
-              }
-            }
-            paramPartsBuffer[j] = Serial.read();
-          }
-          paramsStr += String((char *)paramPartsBuffer);
-          paramBytesMissing--;
-        }
-        float freqTxFloat = paramsStr.substring(0, 7).toFloat();
-        float freqRxFloat = paramsStr.substring(7, 14).toFloat();
-        int toneInt = paramsStr.substring(14, 16).toInt();
-        int squelchInt = paramsStr.substring(16, 17).toInt();
-
-        // Serial.println("PARAMS: " + paramsStr.substring(0, 16) + " freqTxFloat: " + String(freqTxFloat) + " freqRxFloat: " + String(freqRxFloat) + " toneInt: " + String(toneInt));
-
-        tuneTo(freqTxFloat, freqRxFloat, toneInt, squelchInt);
-      }
-      break;
-      case CommandValue::COMMAND_FILTERS:
-      {
-        int paramBytesMissing = 3; // e.g. 000, in order of emphasis, highpass, lowpass
-        String paramsStr = "";
-        if (paramBytesMissing > 0)
-        {
-          uint8_t paramPartsBuffer[paramBytesMissing];
-          for (int j = 0; j < paramBytesMissing; j++)
-          {
-            unsigned long waitStart = micros();
-            while (!Serial.available())
-            {
-              // Wait for a byte.
-              if ((micros() - waitStart) > 500000)
-              { // Give the Android app 0.5 second max before giving up on the command
-                esp_task_wdt_reset();
-                return;
-              }
-            }
-            paramPartsBuffer[j] = Serial.read();
-          }
-          paramsStr += String((char *)paramPartsBuffer);
-          paramBytesMissing--;
-        }
-        bool emphasis = (paramsStr.charAt(0) == '1');
-        bool highpass = (paramsStr.charAt(1) == '1');
-        bool lowpass = (paramsStr.charAt(2) == '1');
-
-        dra->filters(emphasis, highpass, lowpass);
-      }
-      break;
-      case CommandValue::COMMAND_STOP:
-      {
-        Serial.flush();
-      }
-      break;
-      case CommandValue::COMMAND_GET_FIRMWARE_VER:
-      {
-        Serial.write(VERSION_PREFIX, sizeof(VERSION_PREFIX));
-        Serial.write(FIRMWARE_VER, sizeof(FIRMWARE_VER));
-      }
-      break;
-      default:
-        break;
-      }
+      handleCMD();
     }
     break;
     case MsgType::DEFAULT_CMD:
     {
-      if(serialWasRead)
+      if (serialWasRead)
       {
-        // Serial.println("DEFAULT");
         Serial.flush();
       }
       else
       {
-      // If no command was received, do the thing
-      switch (mode)
-      {
-      case Mode::MODE_STOPPED:
+        // If no command was received, do the thing
+        switch (mode)
+        {
+        case Mode::MODE_STOPPED:
+          break;
+        case Mode::MODE_RX:
+        {
+          // handleRxLoopAction();
+        }
         break;
-      case Mode::MODE_RX:
-      {
-        // size_t bytesRead = 0;
-        // uint8_t buffer32[I2S_READ_LEN * 4] = {0};
-        // ESP_ERROR_CHECK(i2s_read(I2S_NUM_0, &buffer32, sizeof(buffer32), &bytesRead, 100));
-        // size_t samplesRead = bytesRead / 4;
-
-        // byte buffer8[I2S_READ_LEN] = {0};
-        // bool squelched = (digitalRead(SQ_PIN) == HIGH);
-
-        // // Check for squelch status change
-        // if (squelched != lastSquelched)
-        // {
-        //   if (squelched)
-        //   {
-        //     // Start fade-out
-        //     fadeCounter = FADE_SAMPLES;
-        //     fadeDirection = -1;
-        //   }
-        //   else
-        //   {
-        //     // Start fade-in
-        //     fadeCounter = FADE_SAMPLES;
-        //     fadeDirection = 1;
-        //   }
-        // }
-        // lastSquelched = squelched;
-
-        // int attenuationIncrement = ATTENUATION_MAX / FADE_SAMPLES;
-
-        // for (int i = 0; i < samplesRead; i++)
-        // {
-        //   uint8_t sampleValue;
-
-        //   // Extract 8-bit sample from 32-bit buffer
-        //   sampleValue = buffer32[i * 4 + 3] << 4;
-        //   sampleValue |= buffer32[i * 4 + 2] >> 4;
-
-        //   // Adjust attenuation during fade
-        //   if (fadeCounter > 0)
-        //   {
-        //     fadeCounter--;
-        //     attenuation += fadeDirection * attenuationIncrement;
-        //     attenuation = max(0, min(attenuation, ATTENUATION_MAX));
-        //   }
-        //   else
-        //   {
-        //     attenuation = squelched ? 0 : ATTENUATION_MAX;
-        //     fadeDirection = 0;
-        //   }
-
-        //   // Apply attenuation to the sample
-        //   int adjustedSample = (((int)sampleValue - 128) * attenuation) >> 8;
-        //   adjustedSample += 128;
-        //   buffer8[i] = (uint8_t)adjustedSample;
-        // }
-
-        // Serial.write(buffer8, samplesRead);
-      }
-      break;
-      case Mode::MODE_TX:
-        break;
-      default:
-        // If we get here.. bad things happened
-        break;
-      }
+        case Mode::MODE_TX:
+          break;
+        default:
+          // If we get here.. bad things happened
+          break;
+        }
       }
     }
     break;

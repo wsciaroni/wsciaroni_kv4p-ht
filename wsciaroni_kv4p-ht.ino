@@ -243,7 +243,7 @@ void handleData()
     //   // Wait for the amount of data we want
     // };
     // serialSampleSource->readFromSerial(numberOfIncomingAudioBytes);
-    for (int i = 0; i < numberOfIncomingAudioBytes; ++i)
+    // for (int i = 0; i < numberOfIncomingAudioBytes; ++i)
       copier.copy();
   }
   else
@@ -496,8 +496,30 @@ void tuneTo(float freqTx, float freqRx, int tone, int squelch)
   // Serial.println("tuneTo: " + String(result));
 }
 
+void stopTx()
+{
+  // copier.end();
+}
+
+void startTx()
+{
+  // copier.begin();
+}
+
 void setMode(Mode newMode)
 {
+  if (mode == newMode)
+  {
+    return;
+  }
+  if(Mode::MODE_TX == mode)
+  {
+    stopTx();
+  }
+  if(Mode::MODE_TX == newMode)
+  {
+    startTx();
+  }
   mode = newMode;
   switch (mode)
   {

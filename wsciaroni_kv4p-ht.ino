@@ -22,29 +22,15 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <driver/i2s.h>
 #include <esp_task_wdt.h>
 
-#include "I2SOutput.h"
-#include "SerialSampleSource.h"
+// Headers
+#include "CommandValueEnum.hpp"
+#include "ModeEnum.hpp"
 
 const byte FIRMWARE_VER[8] = {'0', '0', '0', '0', '0', '0', '0', '1'}; // Should be 8 characters representing a zero-padded version, like 00000001.
 const byte VERSION_PREFIX[7] = {'V', 'E', 'R', 'S', 'I', 'O', 'N'};    // Must match RadioAudioService.VERSION_PREFIX in Android app.
 
-// Commands defined here must match the Android app
-enum class CommandValue : uint8_t
-{
-  COMMAND_PTT_DOWN = 1,        // start transmitting audio that Android app will send
-  COMMAND_PTT_UP = 2,          // stop transmitting audio, go into RX mode
-  COMMAND_TUNE_TO = 3,         // change the frequency
-  COMMAND_FILTERS = 4,         // toggle filters on/off
-  COMMAND_STOP = 5,            // stop everything, just wait for next command
-  COMMAND_GET_FIRMWARE_VER = 6 // report FIRMWARE_VER in the format '00000001' for 1 (etc.)
-};
-
-
 // Mode of the app, which is essentially a state machine
-#define MODE_TX 0
-#define MODE_RX 1
-#define MODE_STOPPED 2
-int mode = MODE_STOPPED;
+Mode mode = Mode::MODE_STOPPED;
 
 // Audio sampling rate, must match what Android app expects (and sends).
 #define AUDIO_SAMPLE_RATE 44100
@@ -158,7 +144,7 @@ void setup()
 
   /////////////////////////////// Set initial state
   // Begin in STOPPED mode
-  setMode(MODE_STOPPED);
+  setMode(Mode::MODE_STOPPED);
 }
 
 void initI2SRx()
@@ -239,7 +225,7 @@ void loop()
     {
     case MsgType::DATA:
     {
-      if (MODE_TX == mode)
+      if (Mode::MODE_TX == mode)
       {
         uint8_t sizeBuffer[2];
         while (Serial.available() < 2)
@@ -271,14 +257,14 @@ void loop()
       case CommandValue::COMMAND_PTT_DOWN:
       {
         output->start(I2S_NUM_0, i2sPins, sampleSource);
-        setMode(MODE_TX);
+        setMode(Mode::MODE_TX);
         esp_task_wdt_reset();
       }
       break;
       case CommandValue::COMMAND_PTT_UP:
       {
         output->stop(I2S_NUM_0);
-        setMode(MODE_RX);
+        setMode(Mode::MODE_RX);
         esp_task_wdt_reset();
       }
       break;
@@ -287,7 +273,7 @@ void loop()
         // Example:
         // 145.450144.850061
         // 7 chars for tx, 7 chars for rx, 2 chars for tone, 1 char for squelch (17 bytes total for params)
-        setMode(MODE_RX);
+        setMode(Mode::MODE_RX);
 
         // If we haven't received all the parameters needed for COMMAND_TUNE_TO, wait for them before continuing.
         // This can happen if ESP32 has pulled part of the command+params from the buffer before Android has completed
@@ -383,9 +369,9 @@ void loop()
       // If no command was received, do the thing
       switch (mode)
       {
-      case MODE_STOPPED:
+      case Mode::MODE_STOPPED:
         break;
-      case MODE_RX:
+      case Mode::MODE_RX:
       {
         // size_t bytesRead = 0;
         // uint8_t buffer32[I2S_READ_LEN * 4] = {0};
@@ -445,7 +431,7 @@ void loop()
         // Serial.write(buffer8, samplesRead);
       }
       break;
-      case MODE_TX:
+      case Mode::MODE_TX:
         break;
       default:
         // If we get here.. bad things happened
@@ -475,21 +461,21 @@ void tuneTo(float freqTx, float freqRx, int tone, int squelch)
   // Serial.println("tuneTo: " + String(result));
 }
 
-void setMode(int newMode)
+void setMode(Mode newMode)
 {
   mode = newMode;
   switch (mode)
   {
-  case MODE_STOPPED:
+  case Mode::MODE_STOPPED:
     digitalWrite(LED_PIN, LOW);
     digitalWrite(PTT_PIN, HIGH);
     break;
-  case MODE_RX:
+  case Mode::MODE_RX:
     digitalWrite(LED_PIN, LOW);
     digitalWrite(PTT_PIN, HIGH);
     // initI2SRx();
     break;
-  case MODE_TX:
+  case Mode::MODE_TX:
     txStartTime = micros();
     digitalWrite(LED_PIN, HIGH);
     digitalWrite(PTT_PIN, LOW);

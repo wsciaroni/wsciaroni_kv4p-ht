@@ -25,6 +25,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // Headers
 #include "CommandValueEnum.hpp"
 #include "ModeEnum.hpp"
+#include "MsgTypeEnum.hpp"
 
 const byte FIRMWARE_VER[8] = {'0', '0', '0', '0', '0', '0', '0', '1'}; // Should be 8 characters representing a zero-padded version, like 00000001.
 const byte VERSION_PREFIX[7] = {'V', 'E', 'R', 'S', 'I', 'O', 'N'};    // Must match RadioAudioService.VERSION_PREFIX in Android app.
@@ -215,13 +216,6 @@ void initI2STx()
   i2s_driver_install(I2S_NUM_0, &i2sTxConfig, 0, NULL);
   i2s_set_dac_mode(I2S_DAC_CHANNEL_RIGHT_EN);
 }
-
-enum class MsgType : uint8_t
-{
-  DATA = 33,
-  CMD = 64,
-  DEFAULT_CMD = 0
-};
 
 void handleData()
 {

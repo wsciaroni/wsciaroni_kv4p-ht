@@ -54,12 +54,13 @@ auto &serial = Serial;
 EncoderL8 dec;
 EncodedAudioStream serialOut(&serial, &dec);
 Throttle serialOutThrottled(serialOut);
+BufferedStream serialOutBuffered(300, serialOutThrottled);
 // rxQueue
 BufferRTOS<uint8_t> rxBuffer(1024 * 10);
 QueueStream<uint8_t> rxQueue(rxBuffer);
 // StreamCopy
 StreamCopy rxCopierSourceToBuffer(rxQueue, fakeSoundStream);
-StreamCopy rxCopierBufferToSink(serialOutThrottled, rxQueue);
+StreamCopy rxCopierBufferToSink(serialOutBuffered, rxQueue);
 // Tasks
 Task rxWriteToSinkTask("rxWrite", 3000, 10, 0);
 Task rxReadFromSourceTask("rxRead", 3000, 10, 1);
@@ -191,7 +192,7 @@ void setupAudioTools()
   // config.bits_per_sample = 8;
   analogAudioStream.begin(config);
   analogAudioStreamThrottled.begin(config);
-  sineWave.begin(infoFast, N_B4);
+  sineWave.begin(info, N_B4);
   // sineWave.end();
 
   txQueue.begin();

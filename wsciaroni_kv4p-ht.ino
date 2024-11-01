@@ -32,9 +32,11 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 /// AudioTools Things
 AudioInfo info(44100, 1, 16);
+AudioInfo infoFast(44318, 1, 16);
 SineWaveGenerator<int16_t> sineWave(3000);
 GeneratedSoundStream<int16_t> fakeSoundStream(sineWave);
 AnalogAudioStream analogAudioStream;
+Throttle analogAudioStreamThrottled(analogAudioStream);
 // StreamCopy copier(analogAudioStream, fakeSoundStream);
 
 // txQueue
@@ -42,7 +44,7 @@ BufferRTOS<uint8_t> txBuffer(1024 * 10);
 QueueStream<uint8_t> txQueue(txBuffer);
 // StreamCopy
 StreamCopy txCopierSourceToBuffer(txQueue, fakeSoundStream);
-StreamCopy txCopierBufferToSink(analogAudioStream, txQueue);
+StreamCopy txCopierBufferToSink(analogAudioStreamThrottled, txQueue);
 // Tasks
 Task txWriteToSinkTask("txWrite", 3000, 10, 0);
 Task txReadFromSourceTask("txRead", 3000, 10, 1);
@@ -188,7 +190,8 @@ void setupAudioTools()
   config.copyFrom(info);
   // config.bits_per_sample = 8;
   analogAudioStream.begin(config);
-  sineWave.begin(info, N_B4);
+  analogAudioStreamThrottled.begin(config);
+  sineWave.begin(infoFast, N_B4);
   // sineWave.end();
 
   txQueue.begin();

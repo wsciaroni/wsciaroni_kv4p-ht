@@ -51,12 +51,13 @@ Task txReadFromSourceTask("txRead", 3000, 10, 1);
 auto &serial = Serial;
 EncoderL8 dec;
 EncodedAudioStream serialOut(&serial, &dec);
+Throttle serialOutThrottled(serialOut);
 // rxQueue
 BufferRTOS<uint8_t> rxBuffer(1024 * 10);
 QueueStream<uint8_t> rxQueue(rxBuffer);
 // StreamCopy
 StreamCopy rxCopierSourceToBuffer(rxQueue, fakeSoundStream);
-StreamCopy rxCopierBufferToSink(serialOut, rxQueue);
+StreamCopy rxCopierBufferToSink(serialOutThrottled, rxQueue);
 // Tasks
 Task rxWriteToSinkTask("rxWrite", 3000, 10, 0);
 Task rxReadFromSourceTask("rxRead", 3000, 10, 1);
@@ -201,6 +202,7 @@ void setupAudioTools()
 
   ///////////////////// RX
   // serialOut.
+  serialOutThrottled.begin(info);
   serialOut.begin(info);
   rxQueue.begin();
   rxWriteToSinkTask.begin([]()

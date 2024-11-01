@@ -44,8 +44,22 @@ QueueStream<uint8_t> txQueue(txBuffer);
 StreamCopy txCopierSourceToBuffer(txQueue, fakeSoundStream);
 StreamCopy txCopierBufferToSink(analogAudioStream, txQueue);
 // Tasks
-Task txWriteToSinkTask("write", 3000, 10, 0);
-Task txReadFromSourceTask("read", 3000, 10, 1);
+Task txWriteToSinkTask("txWrite", 3000, 10, 0);
+Task txReadFromSourceTask("txRead", 3000, 10, 1);
+// TODO: Add Throttle for tx
+
+auto &serial = Serial;
+EncoderL8 dec;
+EncodedAudioStream serialOut(&serial, &dec);
+// rxQueue
+BufferRTOS<uint8_t> rxBuffer(1024 * 10);
+QueueStream<uint8_t> rxQueue(rxBuffer);
+// StreamCopy
+StreamCopy rxCopierSourceToBuffer(rxQueue, fakeSoundStream);
+StreamCopy rxCopierBufferToSink(serialOut, rxQueue);
+// Tasks
+Task rxWriteToSinkTask("rxWrite", 3000, 10, 0);
+Task rxReadFromSourceTask("rxRead", 3000, 10, 1);
 
 /// Application Things
 
@@ -168,6 +182,7 @@ void setInitialState()
 
 void setupAudioTools()
 {
+  ///////////////////// TX
   auto config = analogAudioStream.defaultConfig(TX_MODE);
   config.copyFrom(info);
   // config.bits_per_sample = 8;
@@ -183,6 +198,17 @@ void setupAudioTools()
                              { txCopierSourceToBuffer.copy(); });
 
   stopTx();
+
+  ///////////////////// RX
+  // serialOut.
+  serialOut.begin(info);
+  rxQueue.begin();
+  rxWriteToSinkTask.begin([]()
+                          { rxCopierBufferToSink.copy(); });
+
+  rxReadFromSourceTask.begin([]()
+                             { rxCopierSourceToBuffer.copy(); });
+  stopRx();
 }
 
 void setup()
@@ -484,6 +510,19 @@ void startTx()
   txReadFromSourceTask.resume();
 }
 
+void stopRx()
+{
+  rxReadFromSourceTask.suspend();
+  rxWriteToSinkTask.suspend();
+}
+
+void startRx()
+{
+  rxQueue.flush();
+  rxWriteToSinkTask.resume();
+  rxReadFromSourceTask.resume();
+}
+
 void setMode(Mode newMode)
 {
   if (mode == newMode)
@@ -497,6 +536,14 @@ void setMode(Mode newMode)
   if (Mode::MODE_TX == newMode)
   {
     startTx();
+  }
+  if (Mode::MODE_RX == mode)
+  {
+    stopRx();
+  }
+  if (Mode::MODE_RX == newMode)
+  {
+    startRx();
   }
   mode = newMode;
   switch (mode)

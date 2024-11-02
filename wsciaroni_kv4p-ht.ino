@@ -27,6 +27,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "ModeEnum.hpp"
 #include "MsgTypeEnum.hpp"
 #include "Constants.hpp"
+#include "TuneToMetaData.hpp"
+#include "FiltersMetaData.hpp"
 
 // https://github.com/pschatzmann/arduino-audio-tools/
 #include "AudioTools.h"
@@ -49,7 +51,7 @@ auto &serial = Serial2;
 EncoderL8 enc;
 EncodedAudioStream enc_stream(&serial, &enc);
 Throttle throttle(enc_stream);
-StreamCopy copierOut(throttle, in, 256);  // copies sound into Serial
+StreamCopy copierOut(throttle, in, 256); // copies sound into Serial
 
 ////////////////////////////////////////////////////////////////////////////////
 /// Application Globals
@@ -79,7 +81,8 @@ void setupAudioTools();
 
 /// State Transition Functions
 void setMode(Mode newMode);
-void handleCMD(CommandValue command);
+void metadataCallback(uint8_t *data, int len, void *ref);
+void handleSimpleCmd(CommandValue command);
 void tuneTo(float freqTx, float freqRx, int tone, int squelch);
 void stopTx();
 void startTx();
@@ -142,9 +145,31 @@ void setMode(Mode newMode)
   }
 }
 
-void handleCMD(CommandValue command)
+void metadataCallback(uint8_t *data, int len, void *ref)
 {
-  // TODO: Convert this to be a Metadata Callback from Binary
+  assert(0 != len);
+  CommandValue cmd = static_cast<CommandValue>(data[0]);
+  if (len == 1)
+  {
+    handleSimpleCmd(cmd);
+  }
+  else if (CommandValue::COMMAND_TUNE_TO == cmd)
+  {
+    assert((len - 1) == sizeof(TuneToMetaData));
+    // This is a TuneTo command
+    TuneToMetaData tuneToCommand((TuneToMetaData *)(&data[1]));
+    tuneTo(tuneToCommand.getTxFreq(), tuneToCommand.getRxFreq(), tuneToCommand.getToneInt(), tuneToCommand.getSquelchInt());
+  }
+  else if (CommandValue::COMMAND_FILTERS == cmd)
+  {
+    assert((len - 1) == sizeof(FiltersMetaData));
+    FiltersMetaData filtersData((FiltersMetaData*)*(&data[1]));
+    dra->filters(filtersData.getEmphasis(), filtersData.getHighpass(), filtersData.getHighpass());
+  }
+}
+
+void handleSimpleCmd(CommandValue command)
+{
   switch (command)
   {
   case CommandValue::COMMAND_PTT_DOWN:
@@ -159,79 +184,7 @@ void handleCMD(CommandValue command)
     setMode(Mode::MODE_RX);
   }
   break;
-  case CommandValue::COMMAND_TUNE_TO:
-  {
-    // Example:
-    // 145.450144.850061
-    // 7 chars for tx, 7 chars for rx, 2 chars for tone, 1 char for squelch (17 bytes total for params)
-    setMode(Mode::MODE_RX);
-
-    // If we haven't received all the parameters needed for COMMAND_TUNE_TO, wait for them before continuing.
-    // This can happen if ESP32 has pulled part of the command+params from the buffer before Android has completed
-    // putting them in there. If so, we take byte-by-byte until we get the full params.
-    int paramBytesMissing = 17;
-    String paramsStr = "";
-    if (paramBytesMissing > 0)
-    {
-      uint8_t paramPartsBuffer[paramBytesMissing];
-      for (int j = 0; j < paramBytesMissing; j++)
-      {
-        unsigned long waitStart = micros();
-        while (!Serial.available())
-        {
-          // Wait for a byte.
-          if ((micros() - waitStart) > 500000)
-          { // Give the Android app 0.5 second max before giving up on the command
-            esp_task_wdt_reset();
-            return;
-          }
-        }
-        paramPartsBuffer[j] = Serial.read();
-      }
-      paramsStr += String((char *)paramPartsBuffer);
-      paramBytesMissing--;
-    }
-    float freqTxFloat = paramsStr.substring(0, 7).toFloat();
-    float freqRxFloat = paramsStr.substring(7, 14).toFloat();
-    int toneInt = paramsStr.substring(14, 16).toInt();
-    int squelchInt = paramsStr.substring(16, 17).toInt();
-
-    // Serial.println("PARAMS: " + paramsStr.substring(0, 16) + " freqTxFloat: " + String(freqTxFloat) + " freqRxFloat: " + String(freqRxFloat) + " toneInt: " + String(toneInt));
-
-    tuneTo(freqTxFloat, freqRxFloat, toneInt, squelchInt);
-  }
-  break;
-  case CommandValue::COMMAND_FILTERS:
-  {
-    int paramBytesMissing = 3; // e.g. 000, in order of emphasis, highpass, lowpass
-    String paramsStr = "";
-    if (paramBytesMissing > 0)
-    {
-      uint8_t paramPartsBuffer[paramBytesMissing];
-      for (int j = 0; j < paramBytesMissing; j++)
-      {
-        unsigned long waitStart = micros();
-        while (!Serial.available())
-        {
-          // Wait for a byte.
-          if ((micros() - waitStart) > 500000)
-          { // Give the Android app 0.5 second max before giving up on the command
-            esp_task_wdt_reset();
-            return;
-          }
-        }
-        paramPartsBuffer[j] = Serial.read();
-      }
-      paramsStr += String((char *)paramPartsBuffer);
-      paramBytesMissing--;
-    }
-    bool emphasis = (paramsStr.charAt(0) == '1');
-    bool highpass = (paramsStr.charAt(1) == '1');
-    bool lowpass = (paramsStr.charAt(2) == '1');
-
-    dra->filters(emphasis, highpass, lowpass);
-  }
-  break;
+    break;
   case CommandValue::COMMAND_STOP:
   {
     // Serial.flush();

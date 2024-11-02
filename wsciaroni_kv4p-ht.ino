@@ -32,6 +32,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 // https://github.com/pschatzmann/arduino-audio-tools/
 #include "AudioTools.h"
+#include "AudioTools/AudioCodecs/ContainerBinary.h"
 
 ////////////////////////////////////////////////////////////////////////////////
 /// AudioTools Globals
@@ -52,6 +53,11 @@ EncoderL8 enc;
 EncodedAudioStream enc_stream(&serial, &enc);
 Throttle throttle(enc_stream);
 StreamCopy copierOut(throttle, in, 256); // copies sound into Serial
+
+AnalogAudioStream out;
+BinaryContainerDecoder cont_dec(new DecoderL8());
+EncodedAudioStream decoder(&serial, &cont_dec);
+StreamCopy copier(out, decoder);
 
 ////////////////////////////////////////////////////////////////////////////////
 /// Application Globals
@@ -298,4 +304,12 @@ void setupAudioTools()
 
   throttle.begin(info);
   enc_stream.begin(info);
+
+  // TX
+  auto config2 = out.defaultConfig(TX_MODE);
+  config2.copyFrom(info);
+  out.begin(config2);
+
+  decoder.begin(info);
+  cont_dec.setMetaCallback(metadataCallback);
 }

@@ -26,46 +26,18 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "CommandValueEnum.hpp"
 #include "ModeEnum.hpp"
 #include "MsgTypeEnum.hpp"
+#include "Constants.hpp"
 
 // https://github.com/pschatzmann/arduino-audio-tools/
 #include "AudioTools.h"
 
-/// AudioTools Things
-AudioInfo info(44100, 1, 16);
-AudioInfo infoFast(44318, 1, 16);
-SineWaveGenerator<int16_t> sineWave(3000);
-GeneratedSoundStream<int16_t> fakeSoundStream(sineWave);
-AnalogAudioStream analogAudioStream;
-Throttle analogAudioStreamThrottled(analogAudioStream);
-// StreamCopy copier(analogAudioStream, fakeSoundStream);
+////////////////////////////////////////////////////////////////////////////////
+/// AudioTools Globals
+////////////////////////////////////////////////////////////////////////////////
 
-// txQueue
-BufferRTOS<uint8_t> txBuffer(1024 * 10);
-QueueStream<uint8_t> txQueue(txBuffer);
-// StreamCopy
-StreamCopy txCopierSourceToBuffer(txQueue, fakeSoundStream);
-StreamCopy txCopierBufferToSink(analogAudioStreamThrottled, txQueue);
-// Tasks
-Task txWriteToSinkTask("txWrite", 3000, 10, 0);
-Task txReadFromSourceTask("txRead", 3000, 10, 1);
-// TODO: Add Throttle for tx
-
-auto &serial = Serial;
-EncoderL8 dec;
-EncodedAudioStream serialOut(&serial, &dec);
-Throttle serialOutThrottled(serialOut);
-BufferedStream serialOutBuffered(300, serialOutThrottled);
-// rxQueue
-BufferRTOS<uint8_t> rxBuffer(1024 * 10);
-QueueStream<uint8_t> rxQueue(rxBuffer);
-// StreamCopy
-StreamCopy rxCopierSourceToBuffer(rxQueue, fakeSoundStream);
-StreamCopy rxCopierBufferToSink(serialOutBuffered, rxQueue);
-// Tasks
-Task rxWriteToSinkTask("rxWrite", 3000, 10, 0);
-Task rxReadFromSourceTask("rxRead", 3000, 10, 1);
-
-/// Application Things
+////////////////////////////////////////////////////////////////////////////////
+/// Application Globals
+////////////////////////////////////////////////////////////////////////////////
 
 const byte FIRMWARE_VER[8] = {'0', '0', '0', '0', '0', '0', '0', '1'}; // Should be 8 characters representing a zero-padded version, like 00000001.
 const byte VERSION_PREFIX[7] = {'V', 'E', 'R', 'S', 'I', 'O', 'N'};    // Must match RadioAudioService.VERSION_PREFIX in Android app.
@@ -73,149 +45,30 @@ const byte VERSION_PREFIX[7] = {'V', 'E', 'R', 'S', 'I', 'O', 'N'};    // Must m
 // Mode of the app, which is essentially a state machine
 Mode mode = Mode::MODE_STOPPED;
 
-// Audio sampling rate, must match what Android app expects (and sends).
-#define AUDIO_SAMPLE_RATE 44100
-
-// Offset to make up for fact that sampling is slightly slower than requested, and we don't want underruns.
-// But if this is set too high, then we get audio skips instead of underruns. So there's a sweet spot.
-#define SAMPLING_RATE_OFFSET 218
-
-// Buffer for outgoing audio bytes to send to radio module
-#define TX_TEMP_AUDIO_BUFFER_SIZE 4096   // Holds data we already got off of USB serial from Android app
-#define TX_CACHED_AUDIO_BUFFER_SIZE 1024 // MUST be smaller than DMA buffer size specified in i2sTxConfig, because we dump this cache into DMA buffer when full.
-uint8_t txCachedAudioBuffer[TX_CACHED_AUDIO_BUFFER_SIZE] = {0};
-int txCachedAudioBytes = 0;
-boolean isTxCacheSatisfied = false; // Will be true when the DAC has enough cached tx data to avoid any stuttering (i.e. at least TX_CACHED_AUDIO_BUFFER_SIZE bytes).
-
-// Max data to cache from USB (1024 is ESP32 max)
-#define USB_BUFFER_SIZE 1024
-
-// ms to wait before issuing PTT UP after a tx (to allow final audio to go out)
-#define MS_WAIT_BEFORE_PTT_UP 40
-
-// Connections to radio module
-#define RXD2_PIN 16
-#define TXD2_PIN 17
-#define DAC_PIN 25 // This constant not used, just here for reference. GPIO 25 is implied by use of I2S_DAC_CHANNEL_RIGHT_EN.
-#define ADC_PIN 34 // If this is changed, you may need to manually edit adc1_config_channel_atten() below too.
-#define PTT_PIN 18
-#define PD_PIN 19
-#define SQ_PIN 32
-
-// Built in LED
-#define LED_PIN 2
-
 // Object used for radio module serial comms
 DRA818 *dra = new DRA818(&Serial2, DRA818_VHF);
 
-// Tx runaway detection stuff
-long txStartTime = -1;
-#define RUNAWAY_TX_SEC 200
+////////////////////////////////////////////////////////////////////////////////
+/// Forward Declarations
+////////////////////////////////////////////////////////////////////////////////
 
-// have we installed an I2S driver at least once?
-bool i2sStarted = false;
+/// Setup Functions
+void setInitialState();
 
-// I2S audio sampling stuff
-#define I2S_READ_LEN 1024
-#define I2S_WRITE_LEN 1024
-#define I2S_ADC_UNIT ADC_UNIT_1
-#define I2S_ADC_CHANNEL ADC1_CHANNEL_6
+void setupSerial();
+void setupWDT();
+void setupLED();
+void setupDRA818();
+void setupAudioTools();
 
-// Squelch parameters (for graceful fade to silence)
-#define FADE_SAMPLES 256 // Must be a power of two
-#define ATTENUATION_MAX 256
-int fadeCounter = 0;
-int fadeDirection = 0;             // 0: no fade, 1: fade in, -1: fade out
-int attenuation = ATTENUATION_MAX; // Full volume
-bool lastSquelched = false;
-
-void setupSerial()
-{
-  // Communication with Android via USB cable
-  Serial.begin(921600);
-  Serial.setRxBufferSize(USB_BUFFER_SIZE);
-  Serial.setTxBufferSize(USB_BUFFER_SIZE);
-}
-
-void setupWDT()
-{
-  // Configure watch dog timer (WDT), which will reset the system if it gets stuck somehow.
-  esp_task_wdt_init(10, true); // Reboot if locked up for a bit
-  esp_task_wdt_add(NULL);      // Add the current task to WDT watch
-}
-
-void setupLED()
-{
-  // Debug LED
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, LOW);
-}
-
-void setupDRA818()
-{
-  /////////////////////////////// Setup Radio Module
-  // Set up radio module defaults
-  pinMode(PD_PIN, OUTPUT);
-  digitalWrite(PD_PIN, HIGH); // Power on
-  pinMode(SQ_PIN, INPUT);
-  pinMode(PTT_PIN, OUTPUT);
-  digitalWrite(PTT_PIN, HIGH); // Rx
-
-  // Communication with DRA818V radio module via GPIO pins
-  Serial2.begin(9600, SERIAL_8N1, RXD2_PIN, TXD2_PIN);
-
-  int result = -1;
-  while (result != 1)
-  {
-    result = dra->handshake(); // Wait for module to start up
-  }
-
-  // Serial.println("handshake: " + String(result));
-  // tuneTo(146.700, 146.700, 0, 0);
-  result = dra->volume(8);
-  // Serial.println("volume: " + String(result));
-  result = dra->filters(false, false, false);
-  // Serial.println("filters: " + String(result));
-}
-
-void setInitialState()
-{
-  // Begin in STOPPED mode
-  setMode(Mode::MODE_STOPPED);
-}
-
-void setupAudioTools()
-{
-  ///////////////////// TX
-  auto config = analogAudioStream.defaultConfig(TX_MODE);
-  config.copyFrom(info);
-  // config.bits_per_sample = 8;
-  analogAudioStream.begin(config);
-  analogAudioStreamThrottled.begin(config);
-  sineWave.begin(info, N_B4);
-  // sineWave.end();
-
-  txQueue.begin();
-  txWriteToSinkTask.begin([]()
-                          { txCopierBufferToSink.copy(); });
-
-  txReadFromSourceTask.begin([]()
-                             { txCopierSourceToBuffer.copy(); });
-
-  stopTx();
-
-  ///////////////////// RX
-  // serialOut.
-  serialOutThrottled.begin(info);
-  serialOut.begin(info);
-  rxQueue.begin();
-  rxWriteToSinkTask.begin([]()
-                          { rxCopierBufferToSink.copy(); });
-
-  rxReadFromSourceTask.begin([]()
-                             { rxCopierSourceToBuffer.copy(); });
-  stopRx();
-}
+/// State Transition Functions
+void setMode(Mode newMode);
+void handleCMD(CommandValue command);
+void tuneTo(float freqTx, float freqRx, int tone, int squelch);
+void stopTx();
+void startTx();
+void stopRx();
+void startRx();
 
 void setup()
 {
@@ -227,52 +80,67 @@ void setup()
   setupAudioTools();
 }
 
-void handleData()
+void loop()
 {
+  esp_task_wdt_reset();
+}
+
+void setMode(Mode newMode)
+{
+  if (mode == newMode)
+  {
+    return;
+  }
   if (Mode::MODE_TX == mode)
   {
-    uint8_t sizeBuffer[2];
-    while (Serial.available() < 2)
-    {
-      // Wait for the amount of data we want
-    };
-    Serial.readBytes(sizeBuffer, 2);
-    uint16_t numberOfIncomingAudioBytes = (sizeBuffer[0] << 8) | (sizeBuffer[1] & 0xFF);
-    // Serial.println(numberOfIncomingAudioBytes);
-    // while (Serial.available() < numberOfIncomingAudioBytes)
-    // {
-    //   // Wait for the amount of data we want
-    // };
-    // serialSampleSource->readFromSerial(numberOfIncomingAudioBytes);
-    for (int i = 0; i < numberOfIncomingAudioBytes; ++i)
-    {
-      Serial.read();
-    }
-    // copier.copy();
+    stopTx();
   }
-  else
+  if (Mode::MODE_TX == newMode)
   {
-    throw 1;
+    startTx();
+  }
+  if (Mode::MODE_RX == mode)
+  {
+    stopRx();
+  }
+  if (Mode::MODE_RX == newMode)
+  {
+    startRx();
+  }
+  mode = newMode;
+  switch (mode)
+  {
+  case Mode::MODE_STOPPED:
+    digitalWrite(LED_PIN, LOW);
+    digitalWrite(PTT_PIN, HIGH);
+    break;
+  case Mode::MODE_RX:
+    digitalWrite(LED_PIN, LOW);
+    digitalWrite(PTT_PIN, HIGH);
+    // initI2SRx();
+    break;
+  case Mode::MODE_TX:
+    digitalWrite(LED_PIN, HIGH);
+    digitalWrite(PTT_PIN, LOW);
+    break;
   }
 }
 
-void handleCMD()
+void handleCMD(CommandValue command)
 {
-  CommandValue command = static_cast<CommandValue>(Serial.read());
+  // TODO: Convert this to be a Metadata Callback from Binary
   switch (command)
   {
   case CommandValue::COMMAND_PTT_DOWN:
   {
     // output->start(I2S_NUM_0, i2sPins, sampleSource);
     setMode(Mode::MODE_TX);
-    esp_task_wdt_reset();
   }
   break;
   case CommandValue::COMMAND_PTT_UP:
   {
     // output->stop(I2S_NUM_0);
     setMode(Mode::MODE_RX);
-    esp_task_wdt_reset();
   }
   break;
   case CommandValue::COMMAND_TUNE_TO:
@@ -350,7 +218,7 @@ void handleCMD()
   break;
   case CommandValue::COMMAND_STOP:
   {
-    Serial.flush();
+    // Serial.flush();
   }
   break;
   case CommandValue::COMMAND_GET_FIRMWARE_VER:
@@ -364,208 +232,91 @@ void handleCMD()
   }
 }
 
-void handleRxLoopAction()
-{
-  size_t bytesRead = 0;
-  uint8_t buffer32[I2S_READ_LEN * 4] = {0};
-  ESP_ERROR_CHECK(i2s_read(I2S_NUM_0, &buffer32, sizeof(buffer32), &bytesRead, 100));
-  size_t samplesRead = bytesRead / 4;
-
-  byte buffer8[I2S_READ_LEN] = {0};
-  bool squelched = (digitalRead(SQ_PIN) == HIGH);
-
-  // Check for squelch status change
-  if (squelched != lastSquelched)
-  {
-    if (squelched)
-    {
-      // Start fade-out
-      fadeCounter = FADE_SAMPLES;
-      fadeDirection = -1;
-    }
-    else
-    {
-      // Start fade-in
-      fadeCounter = FADE_SAMPLES;
-      fadeDirection = 1;
-    }
-  }
-  lastSquelched = squelched;
-
-  int attenuationIncrement = ATTENUATION_MAX / FADE_SAMPLES;
-
-  for (int i = 0; i < samplesRead; i++)
-  {
-    uint8_t sampleValue;
-
-    // Extract 8-bit sample from 32-bit buffer
-    sampleValue = buffer32[i * 4 + 3] << 4;
-    sampleValue |= buffer32[i * 4 + 2] >> 4;
-
-    // Adjust attenuation during fade
-    if (fadeCounter > 0)
-    {
-      fadeCounter--;
-      attenuation += fadeDirection * attenuationIncrement;
-      attenuation = max(0, min(attenuation, ATTENUATION_MAX));
-    }
-    else
-    {
-      attenuation = squelched ? 0 : ATTENUATION_MAX;
-      fadeDirection = 0;
-    }
-
-    // Apply attenuation to the sample
-    int adjustedSample = (((int)sampleValue - 128) * attenuation) >> 8;
-    adjustedSample += 128;
-    buffer8[i] = (uint8_t)adjustedSample;
-  }
-
-  Serial.write(buffer8, samplesRead);
-}
-
-void loop()
-{
-  try
-  {
-    //////////// Handle an message if present
-    MsgType incomingMessage = MsgType::DEFAULT_CMD;
-    bool serialWasRead = false;
-    if (Serial.available() > 0)
-    {
-      incomingMessage = static_cast<MsgType>(Serial.read());
-      serialWasRead = true;
-    }
-    switch (incomingMessage)
-    {
-    case MsgType::DATA:
-    {
-      handleData();
-    }
-    break;
-    case MsgType::CMD:
-    {
-      handleCMD();
-    }
-    break;
-    case MsgType::DEFAULT_CMD:
-    {
-      if (serialWasRead)
-      {
-        Serial.flush();
-      }
-      else
-      {
-        // If no command was received, do the thing
-        switch (mode)
-        {
-        case Mode::MODE_STOPPED:
-          break;
-        case Mode::MODE_RX:
-        {
-          // handleRxLoopAction();
-        }
-        break;
-        case Mode::MODE_TX:
-          break;
-        default:
-          // If we get here.. bad things happened
-          break;
-        }
-      }
-    }
-    break;
-    default:
-      // An invalid command was received
-      Serial.flush();
-    }
-
-    // if(Mode::MODE_TX == mode)
-    //   copier.copy();
-    // Regularly reset the WDT timer to prevent the device from rebooting (prove we're not locked up).
-    esp_task_wdt_reset();
-  }
-  catch (int e)
-  {
-    // Disregard, we don't want to crash. Just pick up at next loop().)
-    // Serial.println("Exception in loop(), skipping cycle.");
-  }
-}
-
 void tuneTo(float freqTx, float freqRx, int tone, int squelch)
 {
   int result = dra->group(DRA818_25K, freqTx, freqRx, tone, squelch, 0);
-  // Serial.println("tuneTo: " + String(result));
 }
 
 void stopTx()
 {
-  txReadFromSourceTask.suspend();
-  while (txQueue.available())
-  {
-    // Wait for Tx to finish clearing the buffer
-  }
-  txWriteToSinkTask.suspend();
+  // TODO: Stop the Tx audio streams
 }
 
 void startTx()
 {
-  txQueue.flush();
-  txWriteToSinkTask.resume();
-  txReadFromSourceTask.resume();
+  // TODO: Start the Tx audio streams
 }
 
 void stopRx()
 {
-  rxReadFromSourceTask.suspend();
-  rxWriteToSinkTask.suspend();
+  // TODO: Stop the Rx audio streams
 }
 
 void startRx()
 {
-  rxQueue.flush();
-  rxWriteToSinkTask.resume();
-  rxReadFromSourceTask.resume();
+  // TODO: Start the Rx audio streams
 }
 
-void setMode(Mode newMode)
+////////////////////////////////////////////////////////////////////////////////
+// Setup Functions
+////////////////////////////////////////////////////////////////////////////////
+
+void setupSerial()
 {
-  if (mode == newMode)
+  // Communication with Android via USB cable
+  Serial.begin(921600);
+  Serial.setRxBufferSize(USB_BUFFER_SIZE);
+  Serial.setTxBufferSize(USB_BUFFER_SIZE);
+}
+
+void setupWDT()
+{
+  // Configure watch dog timer (WDT), which will reset the system if it gets stuck somehow.
+  esp_task_wdt_init(10, true); // Reboot if locked up for a bit
+  esp_task_wdt_add(NULL);      // Add the current task to WDT watch
+}
+
+void setupLED()
+{
+  // Debug LED
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
+}
+
+void setupDRA818()
+{
+  /////////////////////////////// Setup Radio Module
+  // Set up radio module defaults
+  pinMode(PD_PIN, OUTPUT);
+  digitalWrite(PD_PIN, HIGH); // Power on
+  pinMode(SQ_PIN, INPUT);
+  pinMode(PTT_PIN, OUTPUT);
+  digitalWrite(PTT_PIN, HIGH); // Rx
+
+  // Communication with DRA818V radio module via GPIO pins
+  Serial2.begin(9600, SERIAL_8N1, RXD2_PIN, TXD2_PIN);
+
+  int result = -1;
+  while (result != 1)
   {
-    return;
+    result = dra->handshake(); // Wait for module to start up
   }
-  if (Mode::MODE_TX == mode)
-  {
-    stopTx();
-  }
-  if (Mode::MODE_TX == newMode)
-  {
-    startTx();
-  }
-  if (Mode::MODE_RX == mode)
-  {
-    stopRx();
-  }
-  if (Mode::MODE_RX == newMode)
-  {
-    startRx();
-  }
-  mode = newMode;
-  switch (mode)
-  {
-  case Mode::MODE_STOPPED:
-    digitalWrite(LED_PIN, LOW);
-    digitalWrite(PTT_PIN, HIGH);
-    break;
-  case Mode::MODE_RX:
-    digitalWrite(LED_PIN, LOW);
-    digitalWrite(PTT_PIN, HIGH);
-    // initI2SRx();
-    break;
-  case Mode::MODE_TX:
-    txStartTime = micros();
-    digitalWrite(LED_PIN, HIGH);
-    digitalWrite(PTT_PIN, LOW);
-    break;
-  }
+
+  // Serial.println("handshake: " + String(result));
+  // tuneTo(146.700, 146.700, 0, 0);
+  result = dra->volume(8);
+  // Serial.println("volume: " + String(result));
+  result = dra->filters(false, false, false);
+  // Serial.println("filters: " + String(result));
+}
+
+void setInitialState()
+{
+  // Begin in STOPPED mode
+  setMode(Mode::MODE_STOPPED);
+}
+
+void setupAudioTools()
+{
+  
 }

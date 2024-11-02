@@ -34,6 +34,22 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ////////////////////////////////////////////////////////////////////////////////
 /// AudioTools Globals
 ////////////////////////////////////////////////////////////////////////////////
+#define AUDIO_USE_SIN_FOR_TESTING
+
+AudioInfo info(44100, 1, 16);
+
+#ifndef AUDIO_USE_SIN_FOR_TESTING
+// AnalogAudioStream in;
+#else
+SineWaveGenerator<int16_t> sineWave(32000);
+GeneratedSoundStream<int16_t> in(sineWave);
+#endif
+
+auto &serial = Serial2;
+EncoderL8 enc;
+EncodedAudioStream enc_stream(&serial, &enc);
+Throttle throttle(enc_stream);
+StreamCopy copierOut(throttle, in, 256);  // copies sound into Serial
 
 ////////////////////////////////////////////////////////////////////////////////
 /// Application Globals
@@ -318,5 +334,15 @@ void setInitialState()
 
 void setupAudioTools()
 {
-  
+#ifndef AUDIO_USE_SIN_FOR_TESTING
+  auto config = in.defaultConfig(RX_MODE);
+  config.copyFrom(info);
+  in.begin(config);
+#else
+  sineWave.begin(info, N_B4);
+  in.begin(info);
+#endif
+
+  throttle.begin(info);
+  enc_stream.begin(info);
 }

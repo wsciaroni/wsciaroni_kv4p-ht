@@ -244,7 +244,10 @@ void handleData()
     //   // Wait for the amount of data we want
     // };
     // serialSampleSource->readFromSerial(numberOfIncomingAudioBytes);
-    // for (int i = 0; i < numberOfIncomingAudioBytes; ++i)
+    for (int i = 0; i < numberOfIncomingAudioBytes; ++i)
+    {
+      Serial.read();
+    }
     // copier.copy();
   }
   else
@@ -255,10 +258,8 @@ void handleData()
 
 void handleCMD()
 {
-  // Serial.println("CMD");
-  uint8_t commandBuffer[1];
-  Serial.readBytes(commandBuffer, 1);
-  switch (static_cast<CommandValue>(commandBuffer[0]))
+  CommandValue command = static_cast<CommandValue>(Serial.read());
+  switch (command)
   {
   case CommandValue::COMMAND_PTT_DOWN:
   {
@@ -429,12 +430,10 @@ void loop()
   {
     //////////// Handle an message if present
     MsgType incomingMessage = MsgType::DEFAULT_CMD;
-    uint8_t headerBuffer[1];
     bool serialWasRead = false;
     if (Serial.available() > 0)
     {
-      Serial.readBytes(headerBuffer, 1);
-      incomingMessage = static_cast<MsgType>(headerBuffer[0]);
+      incomingMessage = static_cast<MsgType>(Serial.read());
       serialWasRead = true;
     }
     switch (incomingMessage)

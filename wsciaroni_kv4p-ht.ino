@@ -31,9 +31,29 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // https://github.com/pschatzmann/arduino-audio-tools/
 #include "AudioTools.h"
 
+// #define SERIAL_TRACE_LOGGING
+
 ////////////////////////////////////////////////////////////////////////////////
 /// AudioTools Globals
 ////////////////////////////////////////////////////////////////////////////////
+#define AUDIO_USE_SIN_FOR_TESTING
+
+AudioInfo info(44100, 1, 16);
+
+#ifndef AUDIO_USE_SIN_FOR_TESTING
+AnalogAudioStream in;
+#else
+SineWaveGenerator<int16_t> sineWave(32000);
+GeneratedSoundStream<int16_t> in(sineWave);
+#endif
+
+auto &serial = Serial;
+EncoderL8 enc;
+EncodedAudioStream enc_stream(&serial, &enc);
+// Throttle throttle(enc_stream);
+StreamCopy copierOut(enc_stream, in); // copies sound into Serial
+
+Task rxCopyTask("rxCopy", 3000, 10);
 
 ////////////////////////////////////////////////////////////////////////////////
 /// Application Globals
@@ -75,6 +95,7 @@ void startRx();
 void setup()
 {
   setupSerial();
+  // AudioLogger::instance().begin(Serial, AudioLogger::Debug);
   setupWDT();
   setupLED();
   setupDRA818();
@@ -84,10 +105,15 @@ void setup()
 
 MsgType msgType;
 
+uint8_t cmdByte[1];
+
 void handleIncomingSerial()
 {
-  msgType = static_cast<MsgType>(Serial.read());
-
+  Serial.readBytes(cmdByte, 1);
+  msgType = static_cast<MsgType>(cmdByte[0]);
+#ifdef SERIAL_TRACE_LOGGING
+  Serial.println("Message Received: " + String(static_cast<int>(msgType)));
+#endif
   switch (msgType)
   {
   case MsgType::CMD:
@@ -97,6 +123,7 @@ void handleIncomingSerial()
     handleDATA();
     break;
   default:
+    Serial.flush();
     break;
   }
 }
@@ -107,12 +134,16 @@ void loop()
   {
     handleIncomingSerial();
   }
+  copierOut.copy();
 
   esp_task_wdt_reset();
 }
 
 void setMode(Mode newMode)
 {
+#ifdef SERIAL_TRACE_LOGGING
+  Serial.println("SetMode " + String(static_cast<int>(newMode)));
+#endif
   if (mode == newMode)
   {
     return;
@@ -121,17 +152,9 @@ void setMode(Mode newMode)
   {
     stopTx();
   }
-  if (Mode::MODE_TX == newMode)
-  {
-    startTx();
-  }
-  if (Mode::MODE_RX == mode)
+  else if (Mode::MODE_RX == mode)
   {
     stopRx();
-  }
-  if (Mode::MODE_RX == newMode)
-  {
-    startRx();
   }
   mode = newMode;
   switch (mode)
@@ -143,17 +166,21 @@ void setMode(Mode newMode)
   case Mode::MODE_RX:
     digitalWrite(LED_PIN, LOW);
     digitalWrite(PTT_PIN, HIGH);
-    // initI2SRx();
+    startRx();
     break;
   case Mode::MODE_TX:
     digitalWrite(LED_PIN, HIGH);
     digitalWrite(PTT_PIN, LOW);
+    startTx();
     break;
   }
 }
 
 void handleCMD(CommandValue command)
 {
+#ifdef SERIAL_TRACE_LOGGING
+  Serial.println("Handle CMD " + String(static_cast<int>(command)));
+#endif
   // TODO: Convert this to be a Metadata Callback from Binary
   switch (command)
   {
@@ -244,7 +271,7 @@ void handleCMD(CommandValue command)
   break;
   case CommandValue::COMMAND_STOP:
   {
-    // Serial.flush();
+    Serial.flush();
   }
   break;
   case CommandValue::COMMAND_GET_FIRMWARE_VER:
@@ -254,6 +281,7 @@ void handleCMD(CommandValue command)
   }
   break;
   default:
+    Serial.flush();
     break;
   }
 }
@@ -261,6 +289,9 @@ void handleCMD(CommandValue command)
 void handleDATA()
 {
   int16_t numberOfBytesToRead = getLengthOfDataToRead();
+#ifdef SERIAL_TRACE_LOGGING
+  Serial.println("Handle DATA " + String(numberOfBytesToRead));
+#endif
   while (numberOfBytesToRead > 0)
   {
     int16_t bytesAvailableForRead = std::min(TX_AUDIO_CHUNK_SIZE, Serial.available());
@@ -272,6 +303,9 @@ void handleDATA()
     numberOfBytesToRead -= bytesToReadThisTime;
     // TODO: Determine if we need to reset the WDT here
   }
+#ifdef SERIAL_TRACE_LOGGING
+  Serial.println("DATA Read");
+#endif
 }
 
 int16_t getLengthOfDataToRead()
@@ -287,27 +321,64 @@ int16_t getLengthOfDataToRead()
 
 void tuneTo(float freqTx, float freqRx, int tone, int squelch)
 {
+#ifdef SERIAL_TRACE_LOGGING
+  Serial.println("Tune to TX: " + String(freqTx) + " RX: " + String(freqRx) + " tone: " + String(tone) + " sq: " + String(squelch));
+#endif
   int result = dra->group(DRA818_25K, freqTx, freqRx, tone, squelch, 0);
 }
 
 void stopTx()
 {
+#ifdef SERIAL_TRACE_LOGGING
+  Serial.println("stopTx");
+#endif
   // TODO: Stop the Tx audio streams
 }
 
 void startTx()
 {
+#ifdef SERIAL_TRACE_LOGGING
+  Serial.println("startTx");
+#endif
   // TODO: Start the Tx audio streams
 }
 
 void stopRx()
 {
-  // TODO: Stop the Rx audio streams
+#ifdef SERIAL_TRACE_LOGGING
+  Serial.println("stopRx");
+#endif
+  // // TODO: Stop the Rx audio streams
+  // in.end();
+  // throttle.end();
+  // enc_stream.end();
+  // rxCopyTask.end();
 }
 
 void startRx()
 {
-  // TODO: Start the Rx audio streams
+  static bool started = false;
+#ifdef SERIAL_TRACE_LOGGING
+  Serial.println("startRx");
+#endif
+  if (!started)
+  {
+// TODO: Start the Rx audio streams
+#ifndef AUDIO_USE_SIN_FOR_TESTING
+    auto config = in.defaultConfig(RX_MODE);
+    config.copyFrom(info);
+    in.begin(config);
+#else
+    sineWave.begin(info, N_B4);
+    in.begin(info);
+#endif
+
+    // throttle.begin(info);
+    enc_stream.begin(info);
+
+    copierOut.begin();
+    started = true;
+  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -371,5 +442,12 @@ void setInitialState()
 
 void setupAudioTools()
 {
-  
+
+  //   rxCopyTask.begin(
+  //   []()
+  //   {
+  //     copierOut.copy();
+  //     esp_task_wdt_reset();
+  //   }
+  // );
 }

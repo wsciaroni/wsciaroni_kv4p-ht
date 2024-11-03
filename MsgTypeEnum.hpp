@@ -4,7 +4,7 @@
 
 enum class MsgType : uint8_t
 {
-  DATA = 33,
-  CMD = 64,
+  DATA = 0xF0,
+  CMD = 0x0F,
   DEFAULT_CMD = 0
 };

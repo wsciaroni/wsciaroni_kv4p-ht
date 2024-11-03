@@ -11,7 +11,7 @@
 #define TX_TEMP_AUDIO_BUFFER_SIZE 4096   // Holds data we already got off of USB serial from Android app
 #define TX_CACHED_AUDIO_BUFFER_SIZE 1024 // MUST be smaller than DMA buffer size specified in i2sTxConfig, because we dump this cache into DMA buffer when full.
 
-#define TX_AUDIO_CHUNK_SIZE 512 ///< Maximum amount to wait for serial data before writing it to the Source Audio Stream
+#define TX_AUDIO_CHUNK_SIZE 512
 
 // Max data to cache from USB (1024 is ESP32 max)
 #define USB_BUFFER_SIZE 1024

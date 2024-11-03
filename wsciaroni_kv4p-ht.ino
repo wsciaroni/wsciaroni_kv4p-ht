@@ -64,6 +64,8 @@ void setupAudioTools();
 /// State Transition Functions
 void setMode(Mode newMode);
 void handleCMD(CommandValue command);
+void handleDATA();
+int16_t getLengthOfDataToRead();
 void tuneTo(float freqTx, float freqRx, int tone, int squelch);
 void stopTx();
 void startTx();
@@ -80,8 +82,32 @@ void setup()
   setupAudioTools();
 }
 
+MsgType msgType;
+
+void handleIncomingSerial()
+{
+  msgType = static_cast<MsgType>(Serial.read());
+
+  switch (msgType)
+  {
+  case MsgType::CMD:
+    handleCMD(static_cast<CommandValue>(Serial.read()));
+    break;
+  case MsgType::DATA:
+    handleDATA();
+    break;
+  default:
+    break;
+  }
+}
+
 void loop()
 {
+  if (Serial.available())
+  {
+    handleIncomingSerial();
+  }
+
   esp_task_wdt_reset();
 }
 
@@ -230,6 +256,33 @@ void handleCMD(CommandValue command)
   default:
     break;
   }
+}
+
+void handleDATA()
+{
+  int16_t numberOfBytesToRead = getLengthOfDataToRead();
+  while (numberOfBytesToRead > 0)
+  {
+    int16_t bytesAvailableForRead = std::min(TX_AUDIO_CHUNK_SIZE, Serial.available());
+    int16_t bytesToReadThisTime = std::min(numberOfBytesToRead, bytesAvailableForRead);
+    uint8_t *bytes = new uint8_t[bytesToReadThisTime];
+    Serial.readBytes(bytes, bytesToReadThisTime);
+    // TODO: write these bytes to the stream
+    delete[] bytes;
+    numberOfBytesToRead -= bytesToReadThisTime;
+    // TODO: Determine if we need to reset the WDT here
+  }
+}
+
+int16_t getLengthOfDataToRead()
+{
+  uint8_t bytes[2];
+  while (Serial.available() < 2)
+  {
+    // Wait for two bytes
+  }
+  Serial.readBytes(bytes, 2);
+  return ((bytes[0] << 8) | bytes[1]);
 }
 
 void tuneTo(float freqTx, float freqRx, int tone, int squelch)

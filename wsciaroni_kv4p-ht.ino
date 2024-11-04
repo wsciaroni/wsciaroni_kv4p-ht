@@ -18,8 +18,10 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include <algorithm>
 #include <DRA818.h>
+#if defined(ESP32) && ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 0 , 0)
 #include <driver/adc.h>
 #include <driver/i2s.h>
+#endif
 #include <esp_task_wdt.h>
 
 // Headers
@@ -36,9 +38,13 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ////////////////////////////////////////////////////////////////////////////////
 /// AudioTools Globals
 ////////////////////////////////////////////////////////////////////////////////
-#define AUDIO_USE_SIN_FOR_TESTING
+// #define AUDIO_USE_SIN_FOR_TESTING
 
-AudioInfo info(44100, 1, 16);
+#if defined(ESP32) && ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0 , 0)
+AudioInfo info(44300, 1, 16);
+#else
+AudioInfo info(44318, 1, 16);
+#endif
 
 #ifndef AUDIO_USE_SIN_FOR_TESTING
 AnalogAudioStream in;
@@ -136,7 +142,9 @@ void loop()
   }
   copierOut.copy();
 
+#if defined(ESP32) && ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 0 , 0)
   esp_task_wdt_reset();
+#endif
 }
 
 void setMode(Mode newMode)
@@ -219,7 +227,9 @@ void handleCMD(CommandValue command)
           // Wait for a byte.
           if ((micros() - waitStart) > 500000)
           { // Give the Android app 0.5 second max before giving up on the command
+#if defined(ESP32) && ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 0 , 0)
             esp_task_wdt_reset();
+#endif
             return;
           }
         }
@@ -253,7 +263,9 @@ void handleCMD(CommandValue command)
           // Wait for a byte.
           if ((micros() - waitStart) > 500000)
           { // Give the Android app 0.5 second max before giving up on the command
+#if defined(ESP32) && ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 0 , 0)
             esp_task_wdt_reset();
+#endif
             return;
           }
         }
@@ -365,8 +377,19 @@ void startRx()
   {
 // TODO: Start the Rx audio streams
 #ifndef AUDIO_USE_SIN_FOR_TESTING
+
     auto config = in.defaultConfig(RX_MODE);
     config.copyFrom(info);
+    config.use_apll = true;
+#if defined(ESP32) && ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0 , 0)
+    config.dac_mono_channel = DAC_CHANNEL_MASK_CH0;
+    config.adc_attenuation = ADC_ATTEN_DB_0;
+#else
+    config.auto_clear = false;
+    config.is_auto_center_read = false;
+    config.adc_pin = ADC_PIN;
+    adc1_config_channel_atten(ADC1_CHANNEL_6, ADC_ATTEN_DB_0);
+#endif
     in.begin(config);
 #else
     sineWave.begin(info, N_B4);
@@ -396,8 +419,10 @@ void setupSerial()
 void setupWDT()
 {
   // Configure watch dog timer (WDT), which will reset the system if it gets stuck somehow.
+#if defined(ESP32) && ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 0 , 0)
   esp_task_wdt_init(10, true); // Reboot if locked up for a bit
   esp_task_wdt_add(NULL);      // Add the current task to WDT watch
+#endif
 }
 
 void setupLED()
